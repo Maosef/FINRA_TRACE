@@ -295,7 +295,7 @@ def plot_sankey(Dc_dealerXtopic_sum,title,width=1000,height=2000):
 
     fig = dict(data=[data], layout=layout)
     #plotly.offline.iplot(fig, validate=False)
-    pio.write_image(fig, "{}.png".format(title))
+    #pio.write_image(fig, "{}.png".format(title))
     plotly.offline.plot(fig, filename =  "{}.html".format(title), auto_open=False)
     
 def main():
