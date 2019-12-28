@@ -1,3 +1,15 @@
+## Updates (as of 12/28)
+
+The input matrix to LDA has three experimental setups: count, volume, and fraction outstanding. This matrix is the input to the corpus creation. Functions for creating the three setups are located in compute_lda.py.
+
+After running
+```
+sbatch FINRA_TRACE/TopicModeling/compute_lda.sh
+``` 
+
+FINRA_TRACE/Result will contain the pyldaviz .html output and document-topic probability (top 3) weights in a .csv. The main code for analyzing the topics is in Topic_analysis.ipynb. This notebook contains code for plotting perplexity, sector distribution, and entropy.
+
+
 # FINRA TRACE Data Research
 This is a research project on Financial Industry Regulatory Authority (FINRA) Trade Reporting and Compliance Engine (TRACE) academic version under the supervision of Dr. Louiqa Raschid.
 
