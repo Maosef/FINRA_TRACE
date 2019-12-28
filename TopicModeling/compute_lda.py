@@ -253,7 +253,7 @@ def trade_vol_BoW_outstanding(data,cap="large"):
     print("computing bag_of_words done!")
     return bag_of_words
 
-def compute_Dc_v4(data):
+def compute_count(data):
     """Compute Dc_v4 which is count of bonds on given dealer and day seperated buy and sell"""
     create_buy_document_vectorize = np.vectorize(create_buy_document)
     create_sell_document_vectorize = np.vectorize(create_sell_document)
@@ -282,7 +282,7 @@ def compute_Dc_v4(data):
     print("all done!")
     return Dc_v4
 
-def trade_SV_BoW(data):
+def trade_frac_out(data):
     """Similar to trade_vol_BoW_norm, but using a different weight calculation (Significance Value)"""
 #     data['price'] = (data['ENTRD_VOL_QT'] * data['RPTD_PR'])/100
     data['SV'] = np.log(1000*data['AMOUNT_OUTSTANDING'])
@@ -589,20 +589,20 @@ def main():
     #data = data.append(load_pickle("FINRA_TRACE_2013.pkl.zip"),ignore_index=True)
     #data = data.append(load_pickle("FINRA_TRACE_2012.pkl.zip"),ignore_index=True)
     # Compute a version of bag_of_words given the save_name
-    if save_name=="trade_SV_BoW":
-        bag_of_words = trade_vol_BoW(data,cap)
+    if save_name=="trade_frac_out":
+        bag_of_words = trade_frac_out(data)
         del data
-        save_name = save_name + "_" + cap
+        save_name = save_name
     elif save_name=="trade_vol_BoW":
-    	bag_of_words = trade_SV_BoW(data)
+        bag_of_words = trade_vol_BoW(data,cap)
     	del data
-    	save_name = save_name
+    	save_name = save_name + "_" + cap
     elif save_name=="trade_vol_BoW_norm":
         bag_of_words = trade_vol_BoW_norm(data,cap)
         del data
         save_name = save_name + "_" + cap
-    elif save_name=="Dc_v4":
-        bag_of_words = compute_Dc_v4(data)
+    elif save_name=="trade_count":
+        bag_of_words = compute_count(data)
         del data
     else:
         print("the save_name does not have a corresponding bag_of_words")
