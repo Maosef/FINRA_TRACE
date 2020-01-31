@@ -5,18 +5,23 @@ warnings.filterwarnings("ignore")
 # Import ML Library
 import pandas as pd
 import numpy as np
+import scipy
 from sklearn import preprocessing
-import warnings
-warnings.filterwarnings(action='ignore', category=UserWarning, module='gensim')
+from sklearn.model_selection import train_test_split
 import gensim
 from gensim.test.utils import datapath
 import pyLDAvis.gensim
 from gensim.corpora import Dictionary
+
 # Import helper Library
 import logging
 from pathlib import Path
 import os
 import sys
+import time
+import csv
+import pickle
+
 # Import local files
 from get_data import load_data
 from manage_path import *
@@ -258,6 +263,7 @@ def compute_count(data):
     create_buy_document_vectorize = np.vectorize(create_buy_document)
     create_sell_document_vectorize = np.vectorize(create_sell_document)
     client_to_delete_vectorize = np.vectorize(client_to_delete)
+    
     print("creating documents ......")
     data['document_date'] = data['TRD_EXCTN_DTTM'].dt.date.apply(lambda x: str(x))
     # Add new column Dc_v4_S which is the string representation of report dealer buy on the specific day
@@ -265,38 +271,38 @@ def compute_count(data):
     # Add new column Dc_v4_B which is the string representation of report dealer sell on the specific day
     data['Dc_v4_B'] = create_buy_document_vectorize(data['Report_Dealer_Index'].values,data['Contra_Party_Index'].values,data['document_date'].values)
     print("documents created!!")
+#     print(data.shape)
     
-    data_gb_sell = data.groupby(by=['Dc_v4_S','BOND_SYM_ID'])
-    data_gb_buy = data.groupby(by=['Dc_v4_B','BOND_SYM_ID'])
+    data_gb_sell = data[data['Dc_v4_S']!='nan'].groupby(by=['Dc_v4_S','BOND_SYM_ID'])
+    data_gb_buy = data[data['Dc_v4_S']!='nan'].groupby(by=['Dc_v4_B','BOND_SYM_ID'])
+#     print(data_gb_sell.count().sum(), data_gb_buy.count().sum())
     
     print("computing Dc_v4 ......")
     Dc_v4 = data_gb_sell['BOND_SYM_ID'].size().astype(np.int16).unstack(fill_value=0)
     Dc_v4 = Dc_v4.append(data_gb_buy['BOND_SYM_ID'].size().astype(np.int16).unstack(fill_value=0))
     Dc_v4 = Dc_v4.sort_index(axis=1)
     print("computing Dc_v4 done!")
-    print("flitering out general client in Dc_v4")
+    
+    print("filtering out documents with client IDs...")
     Dc_v4['to_delete'] = client_to_delete_vectorize(Dc_v4.index)
     Dc_v4 = Dc_v4.loc[Dc_v4['to_delete']!='delete'].drop(['to_delete'],axis=1).copy()
-    Dc_v4 = Dc_v4[Dc_v4.sum(axis=1) > 3].copy()
-    Dc_v4.dropna(axis=1,how='all',inplace=True)
+#     Dc_v4 = Dc_v4[Dc_v4.sum(axis=1) > 3].copy()
+    #Dc_v4.dropna(axis=1,how='all',inplace=True)
     print("all done!")
     return Dc_v4
 
 def trade_frac_out(data):
-    """Similar to trade_vol_BoW_norm, but using a different weight calculation (Significance Value)"""
-#     data['price'] = (data['ENTRD_VOL_QT'] * data['RPTD_PR'])/100
-    data['SV'] = np.log(1000*data['AMOUNT_OUTSTANDING'])
-    data['price'] = data['SV'] * (data['ENTRD_VOL_QT'] / (1000*data['AMOUNT_OUTSTANDING']))
+    """Weight for each transaction is the log of volume (Significance Value), times the fraction of outstanding volume it comprises for that bond.
+    Code is similar to trade_vol_BoW, but using a different weight calculation."""
     
-#     cap_threshold = 10000
-#     if cap=="large":
-#         data = data[data['price'] >= cap_threshold]
-#         data['price'] = data['price'] / cap_threshold
-#     else:
-#         data = data[data['price'] < cap_threshold]
+    data['SV'] = np.log(1000*data['AMOUNT_OUTSTANDING'])
+    data['frac_out'] = 10000 * data['SV'] * (data['ENTRD_VOL_QT'] / (1000 * data['AMOUNT_OUTSTANDING']))
+    
     data['document_date'] = data['TRD_EXCTN_DTTM'].dt.date.apply(lambda x: str(x))
     create_buy_document_no_source_vectorize = np.vectorize(create_buy_document_no_source)
     create_sell_document_no_source_vectorize = np.vectorize(create_sell_document_no_source)
+#     create_buy_document_no_source_vectorize = np.vectorize(create_buy_document)
+#     create_sell_document_no_source_vectorize = np.vectorize(create_sell_document)
     client_to_delete_vectorize = np.vectorize(client_to_delete)
     print("creating documents ......")
     # Add new column trade_vol_BoW_S which is the string representation of report dealer buy on the specific day
@@ -305,16 +311,26 @@ def trade_frac_out(data):
     data['trade_vol_BoW_B'] = create_buy_document_no_source_vectorize(data['Report_Dealer_Index'].values,data['Contra_Party_Index'].values,data['document_date'].values)
     print("documents created!!")
     
-    data = data[['trade_vol_BoW_S','trade_vol_BoW_B','BOND_SYM_ID','price']].copy()
+    data = data[['trade_vol_BoW_S','trade_vol_BoW_B','BOND_SYM_ID','frac_out']].copy()
+    
     data_gb_sell = data[data['trade_vol_BoW_S']!='nan'].groupby(by=['trade_vol_BoW_S','BOND_SYM_ID'])
     data_gb_buy = data[data['trade_vol_BoW_B']!='nan'].groupby(by=['trade_vol_BoW_B','BOND_SYM_ID'])
+#     print(data_gb_sell.count().sum(), data_gb_buy.count().sum())
     
     print("computing bag_of_words ......")
-    bag_of_words = data_gb_sell['price'].sum().astype(np.int32).unstack(level=-1).to_sparse()
-    bag_of_words = bag_of_words.append(data_gb_buy['price'].sum().astype(np.int32).unstack(level=-1).to_sparse())
-    bag_of_words = bag_of_words.apply(lambda x: x / x.sum()) * 1000 # Normalize
+    bag_of_words = data_gb_sell['frac_out'].sum().unstack(level=-1).to_sparse()
+    bag_of_words = bag_of_words.append(data_gb_buy['frac_out'].sum().unstack(level=-1).to_sparse())
+#     bag_of_words = bag_of_words.apply(lambda x: x / x.sum()) * 1000 # Normalize
     bag_of_words = bag_of_words.sort_index(axis=1)
     print("computing bag_of_words done!")
+    
+    print("filtering out documents with client IDs...")
+#     bag_of_words['to_delete'] = client_to_delete_vectorize(bag_of_words.index)
+#     bag_of_words = bag_of_words.loc[bag_of_words['to_delete']!='delete'].drop(['to_delete'],axis=1).copy()
+#     bag_of_words = bag_of_words[bag_of_words.sum(axis=1) > 3].copy()
+#     bag_of_words.dropna(axis=1,how='all',inplace=True)
+    print("all done!")
+    
     return bag_of_words
 
 def compute_Tc_v1(data):
@@ -364,11 +380,15 @@ def compute_matrix3():
     return matrix_3
 
 def compute_corpus(bag_of_words,corpus_save_name,save=True):
-    """Compute corpus given a bag_of_words and save it"""
+    """Compute corpus given a bag_of_words and save it. 
+    We work with sparse dataframes, which save memory and time."""
+    
     print("computing corpus...")
-    bag_of_words = bag_of_words.fillna(0)
-    # For level=-1
-    corpus = gensim.matutils.Dense2Corpus(bag_of_words.values,documents_columns=False)
+    #bag_of_words = bag_of_words.fillna(0)
+    #bag_of_words = scipy.sparse.csr_matrix(bag_of_words.sparse.to_coo()) 
+    corpus = gensim.matutils.Sparse2Corpus(bag_of_words,documents_columns=False)
+    #train_corpus = gensim.matutils.Dense2Corpus(bag_of_words.values[:split],documents_columns=False)
+    
     # For level=0
     #corpus = gensim.matutils.Dense2Corpus(bag_of_words.values,documents_columns=True)
     print("corpus computed!!")
@@ -379,6 +399,7 @@ def compute_corpus(bag_of_words,corpus_save_name,save=True):
             create_directory(corpus_directory)
         file_name = corpus_directory / "{}.mm".format(corpus_save_name)
         gensim.corpora.MmCorpus.serialize(str(file_name), corpus)
+        
         print("corpus saved!!")
         return corpus
     else:
@@ -485,7 +506,7 @@ def compute_topic_distributed(corpus_name,corpus,num_topics,id2word,chunksize=25
     print("Model successfully save at" + save_path)
     
 # ------------------------ LDA Analysis -------------------------
-def document_topic_distribution(corpus,matrix_object,model,model_name,num_topics,minimum_probability=0.10):
+def document_topic_distribution(corpus,index,model,model_name,num_topics,minimum_probability=0.10):
     print('caculating document_topic_distribution ...')
     # minimum_probability is our threshold
     document_topics = model.get_document_topics(corpus,minimum_probability=minimum_probability)
@@ -494,7 +515,7 @@ def document_topic_distribution(corpus,matrix_object,model,model_name,num_topics
     # need to transpose it because gensim represents documents on columns token on index
     document_topic_distribution_numpy = np.transpose(document_topic_distribution_numpy)
     # combine document_topic_distribution with index from matrix and columns represents gensim topics
-    document_topic_distribution_pandas = pd.DataFrame(data=document_topic_distribution_numpy,index=matrix_object.index,columns=np.arange(1,int(num_topics)+1,1))
+    document_topic_distribution_pandas = pd.DataFrame(data=document_topic_distribution_numpy,index=index,columns=np.arange(1,int(num_topics)+1,1))
     # Only get the top three topics per document
     document_topic_distribution_pandas = document_topic_distribution_pandas[document_topic_distribution_pandas.rank(axis=1,method='max',ascending=False) <= 3]
     print('caculating document_topic_distribution done!!!')
@@ -584,33 +605,68 @@ def main():
     cap = str(sys.argv[2])
     num_topics = int(sys.argv[3])
     # Load data
-    data = load_pickle("FINRA_TRACE_2015.pkl.zip")
-    data = data.append(load_pickle("FINRA_TRACE_2014.pkl.zip"),ignore_index=True)
-    #data = data.append(load_pickle("FINRA_TRACE_2013.pkl.zip"),ignore_index=True)
-    #data = data.append(load_pickle("FINRA_TRACE_2012.pkl.zip"),ignore_index=True)
-    # Compute a version of bag_of_words given the save_name
-    if save_name=="trade_frac_out":
-        bag_of_words = trade_frac_out(data)
-        del data
-        save_name = save_name
-    elif save_name=="trade_vol_BoW":
-        bag_of_words = trade_vol_BoW(data,cap)
-    	del data
-    	save_name = save_name + "_" + cap
-    elif save_name=="trade_vol_BoW_norm":
-        bag_of_words = trade_vol_BoW_norm(data,cap)
-        del data
-        save_name = save_name + "_" + cap
-    elif save_name=="trade_count":
-        bag_of_words = compute_count(data)
-        del data
-    else:
-        print("the save_name does not have a corresponding bag_of_words")
+    bow_matrix_train_path = save_name + "_train_sparse.npz"
+    bow_matrix_test_path = save_name + "_test_sparse.npz"
+
+    if False: #os.path.exists(bow_matrix_train_path):
+        #X_train = scipy.sparse.load_npz(bow_matrix_train_path)
+        #X_test = scipy.sparse.load_npz(bow_matrix_test_path)
+        pass
+    else: 
+        data = load_pickle("FINRA_TRACE_2014.pkl.zip")
+        #data = data.append(load_pickle("FINRA_TRACE_2014.pkl.zip"),ignore_index=True)
+        #data = data.append(load_pickle("FINRA_TRACE_2013.pkl.zip"),ignore_index=True)
+        #data = data.append(load_pickle("FINRA_TRACE_2012.pkl.zip"),ignore_index=True)
+        # Compute a version of bag_of_words given the save_name
+        if save_name=="trade_frac_out":
+            bag_of_words = trade_frac_out(data)
+            del data
+            save_name = save_name
+        elif save_name=="trade_vol_BoW":
+            bag_of_words = trade_vol_BoW(data,cap)
+            del data
+            save_name = save_name + "_" + cap
+        elif save_name=="trade_vol_BoW_norm":
+            bag_of_words = trade_vol_BoW_norm(data,cap)
+            del data
+            save_name = save_name + "_" + cap
+        elif save_name=="trade_count":
+            bag_of_words = compute_count(data)
+            del data
+        else:
+            raise Exception("the save_name does not have a corresponding bag_of_words")
+            
+        dtype = pd.SparseDtype(float, fill_value=0)
+        X = scipy.sparse.csr_matrix(bag_of_words.astype(dtype).sparse.to_coo()) 
+        #X = bag_of_words.astype(dtype)
+        #cutoff = int(X.shape[0]*0.9)
+        #X_train = X[:cutoff]
+        #X_test = X[cutoff:]
+        X_train, X_test, train_idx, test_idx = train_test_split(X, np.arange(X.shape[0]), test_size=0.1, random_state=42)
+        scipy.sparse.save_npz(save_name + "_train_sparse.npz", X_train) 
+        scipy.sparse.save_npz(save_name + "_test_sparse.npz", X_test)
+	# slice our matrix to be just the training data
+        #bag_of_words = bag_of_words.iloc[train_idx]
+        train_index = bag_of_words.index[train_idx]
+
     # Compute input for gensim LDA
-    corpus = compute_corpus(bag_of_words,save_name)
+    corpus = compute_corpus(X_train,save_name)
+    test_corpus = compute_corpus(X_test,save_name + "_test") 
     id2word = compute_id2word(bag_of_words,save_name)
     # Run Gensim LDA
-    lda = compute_topic(save_name,corpus,num_topics,id2word,workers=11,chunksize=12500,passes=40,iterations=600)
+    start = time.time()
+    lda = compute_topic(save_name,corpus,num_topics,id2word,workers=11,chunksize=12500,passes=10,iterations=600)
+    
+    lda_time = time.time()-start
+    train_perplex = lda.log_perplexity(corpus)
+    test_perplex = lda.log_perplexity(test_corpus)
+    
+    print("perplexity scores: ", train_perplex, test_perplex)
+    with open("perplex_scores.csv","a+") as f:
+        writer = csv.writer(f)
+        writer.writerow([save_name,num_topics,train_perplex,test_perplex,lda_time])
+
+
     # ---------------- LDA Analysis  ----------------
     #os.environ["MKL_NUM_THREADS"] = "4"
     #os.environ["NUMEXPR_NUM_THREADS"] = "4"
@@ -619,7 +675,7 @@ def main():
     dictionary = Dictionary.from_corpus(corpus,id2word=id2word)
     save_pyldavis2html(lda, corpus, dictionary,save_name,num_topics)
     # Save document X topic matrix to csv
-    document_topic_distribution(corpus,bag_of_words,lda,save_name,num_topics)
+    document_topic_distribution(corpus,train_index,lda,save_name,num_topics)
     
 if __name__== "__main__":
     main()
